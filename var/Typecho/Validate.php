@@ -1,27 +1,13 @@
 <?php
-// vim: set et sw=4 ts=4 sts=4 fdm=marker ff=unix fenc=utf8
-/**
- * Typecho Blog Platform
- *
- * 验证类
- * <code>
- * $test = "hello";
- * $Validation  = new TypechoValidation();
- * $Validation->form($test, array("alpha" => "不是字符");
- * var_dump($Validation->getErrorMsg());
- * </code>
- *
- * @copyright  Copyright (c) 2008 Typecho team (http://www.typecho.org)
- * @license    GNU General Public License 2.0
- * @version    $Id: Validation.php 106 2008-04-11 02:23:54Z magike.net $
- */
+
+namespace Typecho;
 
 /**
  * 验证类
  *
  * @package Validate
  */
-class Typecho_Validate
+class Validate
 {
     /**
      * 内部数据
@@ -29,7 +15,7 @@ class Typecho_Validate
      * @access private
      * @var array
      */
-    private $_data;
+    private array $data;
 
     /**
      * 当前验证指针
@@ -37,7 +23,7 @@ class Typecho_Validate
      * @access private
      * @var string
      */
-    private $_key;
+    private string $key;
 
     /**
      * 验证规则数组
@@ -45,7 +31,7 @@ class Typecho_Validate
      * @access private
      * @var array
      */
-    private $_rules = [];
+    private array $rules = [];
 
     /**
      * 中断模式,一旦出现验证错误即抛出而不再继续执行
@@ -53,7 +39,7 @@ class Typecho_Validate
      * @access private
      * @var boolean
      */
-    private $_break = false;
+    private bool $break = false;
 
     /**
      * 最小长度
@@ -67,7 +53,7 @@ class Typecho_Validate
      */
     public static function minLength(string $str, int $length): bool
     {
-        return (Typecho_Common::strLen($str) >= $length);
+        return (Common::strLen($str) >= $length);
     }
 
     /**
@@ -96,7 +82,7 @@ class Typecho_Validate
      */
     public static function maxLength(string $str, int $length): bool
     {
-        return (Typecho_Common::strLen($str) < $length);
+        return (Common::strLen($str) < $length);
     }
 
     /**
@@ -110,7 +96,8 @@ class Typecho_Validate
      */
     public static function email(string $str): bool
     {
-        return preg_match("/^[_a-z0-9-\.+]+@([-a-z0-9]+\.)+[a-z]{2,}$/i", $str);
+        $email = filter_var($str, FILTER_SANITIZE_EMAIL);
+        return !!filter_var($str, FILTER_VALIDATE_EMAIL) && ($email === $str);
     }
 
     /**
@@ -124,14 +111,8 @@ class Typecho_Validate
      */
     public static function url(string $str): bool
     {
-        $parts = @parse_url($str);
-        if (!$parts) {
-            return false;
-        }
-
-        return isset($parts['scheme']) &&
-            in_array($parts['scheme'], ['http', 'https', 'ftp']) &&
-            !preg_match('/(\(|\)|\\\|"|<|>|[\x00-\x08]|[\x0b-\x0c]|[\x0e-\x19])/', $str);
+        $url = Common::safeUrl($str);
+        return !!filter_var($str, FILTER_VALIDATE_URL) && ($url === $str);
     }
 
     /**
@@ -139,13 +120,13 @@ class Typecho_Validate
      *
      * @access public
      *
-     * @param string
+     * @param string $str
      *
      * @return boolean
      */
     public static function alpha(string $str): bool
     {
-        return preg_match("/^([a-z])+$/i", $str) ? true : false;
+        return ctype_alpha($str);
     }
 
     /**
@@ -153,13 +134,13 @@ class Typecho_Validate
      *
      * @access public
      *
-     * @param string
+     * @param string $str
      *
      * @return boolean
      */
     public static function alphaNumeric(string $str): bool
     {
-        return preg_match("/^([a-z0-9])+$/i", $str);
+        return ctype_alnum($str);
     }
 
     /**
@@ -167,13 +148,13 @@ class Typecho_Validate
      *
      * @access public
      *
-     * @param string
+     * @param string $str
      *
      * @return boolean
      */
     public static function alphaDash(string $str): bool
     {
-        return preg_match("/^([_a-z0-9-])+$/i", $str) ? true : false;
+        return !!preg_match("/^([_a-z0-9-])+$/i", $str);
     }
 
     /**
@@ -216,7 +197,7 @@ class Typecho_Validate
      */
     public static function isFloat($str): bool
     {
-        return preg_match("/^[0-9\.]+$/", $str);
+        return filter_var($str, FILTER_VALIDATE_FLOAT) !== false;
     }
 
     /**
@@ -230,7 +211,19 @@ class Typecho_Validate
      */
     public static function isInteger($str): bool
     {
-        return is_numeric($str);
+        return filter_var($str, FILTER_VALIDATE_INT) !== false;
+    }
+
+    /**
+     * 正则表达式验证
+     *
+     * @param string $str
+     * @param string $pattern
+     * @return bool
+     */
+    public static function regexp(string $str, string $pattern): bool
+    {
+        return preg_match($pattern, $str) === 1;
     }
 
     /**
@@ -239,19 +232,19 @@ class Typecho_Validate
      * @access public
      *
      * @param string $key 数值键值
-     * @param string|array $rule 规则名称
+     * @param string|callable $rule 规则名称
      * @param string $message 错误字符串
      *
      * @return $this
      */
-    public function addRule(string $key, $rule, string $message): Typecho_Validate
+    public function addRule(string $key, $rule, string $message): Validate
     {
         if (func_num_args() <= 3) {
-            $this->_rules[$key][] = [$rule, $message];
+            $this->rules[$key][] = [$rule, $message];
         } else {
             $params = func_get_args();
             $params = array_splice($params, 3);
-            $this->_rules[$key][] = array_merge([$rule, $message], $params);
+            $this->rules[$key][] = array_merge([$rule, $message], $params);
         }
 
         return $this;
@@ -265,7 +258,7 @@ class Typecho_Validate
      */
     public function setBreak()
     {
-        $this->_break = true;
+        $this->break = true;
     }
 
     /**
@@ -279,22 +272,22 @@ class Typecho_Validate
      *
      * @return    array
      */
-    public function run(array $data, array $rules = null): array
+    public function run(array $data, ?array $rules = null): array
     {
         $result = [];
-        $this->_data = $data;
-        $rules = empty($rules) ? $this->_rules : $rules;
+        $this->data = $data;
+        $rules = empty($rules) ? $this->rules : $rules;
 
         // Cycle through the rules and test for errors
-        foreach ($rules as $key => $rules) {
-            $this->_key = $key;
+        foreach ($rules as $key => $rule) {
+            $this->key = $key;
             $data[$key] = (is_array($data[$key]) ? 0 == count($data[$key])
-                : 0 == strlen($data[$key])) ? null : $data[$key];
+                : 0 == strlen($data[$key] ?? '')) ? null : $data[$key];
 
-            foreach ($rules as $params) {
+            foreach ($rule as $params) {
                 $method = $params[0];
 
-                if ('required' != $method && 'confirm' != $method && 0 == strlen($data[$key])) {
+                if ('required' != $method && 'confirm' != $method && 0 == strlen($data[$key] ?? '')) {
                     continue;
                 }
 
@@ -302,14 +295,14 @@ class Typecho_Validate
                 $params[1] = $data[$key];
                 $params = array_slice($params, 1);
 
-                if (!call_user_func_array(is_array($method) ? $method : [$this, $method], $params)) {
+                if (!call_user_func_array(is_callable($method) ? $method : [$this, $method], $params)) {
                     $result[$key] = $message;
                     break;
                 }
             }
 
             /** 开启中断 */
-            if ($this->_break && $result) {
+            if ($this->break && $result) {
                 break;
             }
         }
@@ -329,7 +322,7 @@ class Typecho_Validate
      */
     public function confirm(?string $str, string $key): bool
     {
-        return !empty($this->_data[$key]) ? ($str == $this->_data[$key]) : empty($str);
+        return !empty($this->data[$key]) ? ($str == $this->data[$key]) : empty($str);
     }
 
     /**
@@ -337,12 +330,12 @@ class Typecho_Validate
      *
      * @access public
      *
-     * @param string|null $str 待处理的字符串
-     *
      * @return boolean
      */
-    public function required(?string $str): bool
+    public function required(): bool
     {
-        return !empty($this->_data[$this->_key]);
+        return array_key_exists($this->key, $this->data) &&
+            (is_array($this->data[$this->key]) ? 0 < count($this->data[$this->key])
+                : 0 < strlen($this->data[$this->key] ?? ''));
     }
 }

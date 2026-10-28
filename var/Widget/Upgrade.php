@@ -1,14 +1,15 @@
 <?php
-if (!defined('__TYPECHO_ROOT_DIR__')) exit;
-/**
- * 升级动作
- *
- * @category typecho
- * @package Widget
- * @copyright Copyright (c) 2008 Typecho team (http://www.typecho.org)
- * @license GNU General Public License 2.0
- * @version $Id$
- */
+
+namespace Widget;
+
+use Typecho\Common;
+use Exception;
+use Widget\Base\Options as BaseOptions;
+use Utils\Upgrade as UpgradeAction;
+
+if (!defined('__TYPECHO_ROOT_DIR__')) {
+    exit;
+}
 
 /**
  * 升级组件
@@ -17,82 +18,81 @@ if (!defined('__TYPECHO_ROOT_DIR__')) exit;
  * @category typecho
  * @package Widget
  */
-class Widget_Upgrade extends Widget_Abstract_Options implements Widget_Interface_Do
+class Upgrade extends BaseOptions implements ActionInterface
 {
+    /**
+     * minimum supported version
+     */
+    public const MIN_VERSION = '1.1.0';
+
     /**
      * 执行升级程序
      *
-     * @access public
-     * @return void
-     * @throws Typecho_Exception
+     * @throws \Typecho\Db\Exception
      */
     public function upgrade()
     {
-        $packages = get_class_methods('Upgrade');
+        $currentVersion = $this->options->version;
 
-        preg_match("/^\w+ ([0-9\.]+)(\/[0-9\.]+)?$/i", $this->options->generator, $matches);
-        $currentVersion = $matches[1];
-        $currentMinor = '0';
-        if (isset($matches[2])) {
-            $currentMinor = substr($matches[2], 1);
+        if (version_compare($currentVersion, self::MIN_VERSION, '<')) {
+            Notice::alloc()->set(
+                _t('请先升级至版本 %s', self::MIN_VERSION),
+                'error'
+            );
+
+            $this->response->goBack();
         }
 
+        $ref = new \ReflectionClass(UpgradeAction::class);
         $message = [];
 
-        foreach ($packages as $package) {
-            preg_match("/^v([_0-9]+)(r[_0-9]+)?$/", $package, $matches);
-
+        foreach ($ref->getMethods() as $method) {
+            preg_match("/^v([_0-9]+)$/", $method->getName(), $matches);
             $version = str_replace('_', '.', $matches[1]);
 
-            if (version_compare($currentVersion, $version, '>')) {
-                break;
+            if (version_compare($currentVersion, $version, '>=')) {
+                continue;
             }
 
-            if (isset($matches[2])) {
-                $minor = substr(str_replace('_', '.', $matches[2]), 1);
-
-                if (version_compare($currentVersion, $version, '=')
-                    && version_compare($currentMinor, $minor, '>=')) {
-                    break;
-                }
-
-                $version .= '/' . $minor;
-            }
-
-            $options = $this->widget('Widget_Options@' . $package);
+            $options = Options::allocWithAlias($version);
 
             /** 执行升级脚本 */
             try {
-                $result = call_user_func(['Upgrade', $package], $this->db, $options);
+                $result = $method->invoke(null, $this->db, $options);
                 if (!empty($result)) {
                     $message[] = $result;
                 }
-            } catch (Typecho_Exception $e) {
-                $this->widget('Widget_Notice')->set($e->getMessage(), 'error');
+            } catch (Exception $e) {
+                Notice::alloc()->set($e->getMessage(), 'error');
                 $this->response->goBack();
-                return;
             }
 
             /** 更新版本号 */
-            $this->update(['value' => 'Typecho ' . $version],
-                $this->db->sql()->where('name = ?', 'generator'));
+            $this->update(
+                ['value' => 'Typecho ' . $version],
+                $this->db->sql()->where('name = ?', 'generator')
+            );
 
-            $this->destroy('Widget_Options@' . $package);
+            Options::destroy($version);
         }
 
         /** 更新版本号 */
-        $this->update(['value' => 'Typecho ' . Typecho_Common::VERSION],
-            $this->db->sql()->where('name = ?', 'generator'));
+        $this->update(
+            ['value' => 'Typecho ' . Common::VERSION],
+            $this->db->sql()->where('name = ?', 'generator')
+        );
 
-        $this->widget('Widget_Notice')->set(empty($message) ? _t("升级已经完成") : $message,
-            empty($message) ? 'success' : 'notice');
+        Notice::alloc()->set(
+            empty($message) ? _t("升级已经完成") : $message,
+            empty($message) ? 'success' : 'notice'
+        );
     }
 
     /**
      * 初始化函数
      *
-     * @access public
-     * @return void
+     * @throws \Typecho\Db\Exception
+     * @throws \Typecho\Widget\Exception
      */
     public function action()
     {

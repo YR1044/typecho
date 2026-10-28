@@ -1,109 +1,108 @@
 <?php
-/**
- * Typecho Blog Platform
- *
- * @copyright  Copyright (c) 2008 Typecho team (http://www.typecho.org)
- * @license    GNU General Public License 2.0
- * @version    $Id: Widget.php 107 2008-04-11 07:14:43Z magike.net $
- */
+
+namespace Typecho;
+
+use Typecho\Widget\Helper\EmptyClass;
+use Typecho\Widget\Request as WidgetRequest;
+use Typecho\Widget\Response as WidgetResponse;
+use Typecho\Widget\Terminal;
 
 /**
  * Typecho组件基类
  *
- * @package Widget
+ * @property $sequence
+ * @property $length
+ * @property-read $request
+ * @property-read $response
+ * @property-read $parameter
  */
-abstract class Typecho_Widget
+abstract class Widget
 {
     /**
      * widget对象池
      *
-     * @access private
      * @var array
      */
-    private static $_widgetPool = [];
+    private static array $widgetPool = [];
 
     /**
      * widget别名
      *
-     * @access private
      * @var array
      */
-    private static $_widgetAlias = [];
+    private static array $widgetAlias = [];
+
+    /**
+     * request对象
+     *
+     * @var WidgetRequest
+     */
+    protected WidgetRequest $request;
+
+    /**
+     * response对象
+     *
+     * @var WidgetResponse
+     */
+    protected WidgetResponse $response;
 
     /**
      * 数据堆栈
      *
-     * @access public
      * @var array
      */
-    protected $stack = [];
+    protected array $stack = [];
 
     /**
      * 当前队列指针顺序值,从1开始
      *
      * @var integer
      */
-    protected $sequence = 0;
+    protected int $sequence = 0;
 
     /**
      * 队列长度
      *
-     * @access public
      * @var integer
      */
-    protected $length = 0;
-
-    /**
-     * request对象
-     *
-     * @var Typecho_Request
-     * @access public
-     */
-    protected $request;
-
-    /**
-     * response对象
-     *
-     * @var Typecho_Response
-     * @access public
-     */
-    protected $response;
+    protected int $length = 0;
 
     /**
      * config对象
      *
-     * @access public
-     * @var Typecho_Config
+     * @var Config
      */
-    protected $parameter;
+    protected Config $parameter;
 
     /**
      * 数据堆栈每一行
      *
-     * @access protected
      * @var array
      */
-    protected $row = [];
+    protected array $row = [];
 
     /**
      * 构造函数,初始化组件
      *
-     * @access public
-     *
-     * @param mixed $request request对象
-     * @param mixed $response response对象
+     * @param WidgetRequest $request request对象
+     * @param WidgetResponse $response response对象
      * @param mixed $params 参数列表
      */
-    public function __construct($request, $response, $params = null)
+    public function __construct(WidgetRequest $request, WidgetResponse $response, $params = null)
     {
         //设置函数内部对象
         $this->request = $request;
         $this->response = $response;
-        $this->parameter = new Typecho_Config();
+        $this->parameter = Config::factory($params);
 
-        if (!empty($params)) {
-            $this->parameter->setDefault($params);
-        }
+        $this->init();
+    }
+
+    /**
+     * init method
+     */
+    protected function init()
+    {
     }
 
     /**
@@ -111,65 +110,113 @@ abstract class Typecho_Widget
      *
      * @param string $widgetClass
      * @param string $aliasClass
-     *
-     * @static
-     * @access public
-     * @return void
      */
     public static function alias(string $widgetClass, string $aliasClass)
     {
-        self::$_widgetAlias[$widgetClass] = $aliasClass;
+        self::$widgetAlias[$widgetClass] = $aliasClass;
     }
 
     /**
      * 工厂方法,将类静态化放置到列表中
      *
-     * @access public
-     *
-     * @param string $alias 组件别名
+     * @param class-string $alias 组件别名
      * @param mixed $params 传递的参数
      * @param mixed $request 前端参数
-     * @param boolean $enableResponse 是否允许http回执
-     *
-     * @return Typecho_Widget
-     * @throws Typecho_Exception
+     * @param bool|callable $disableSandboxOrCallback 回调
+     * @return Widget
      */
-    public static function widget(string $alias, $params = null, $request = null, bool $enableResponse = true): Typecho_Widget
+    public static function widget(
+        string $alias,
+        $params = null,
+        $request = null,
+        $disableSandboxOrCallback = true
+    ): Widget {
+        [$className] = explode('@', $alias);
+        $key = Common::nativeClassName($alias);
+
+        if (isset(self::$widgetAlias[$className])) {
+            $className = self::$widgetAlias[$className];
+        }
+
+        $sandbox = false;
+
+        if ($disableSandboxOrCallback === false || is_callable($disableSandboxOrCallback)) {
+            $sandbox = true;
+            Request::getInstance()->beginSandbox(new Config($request));
+            Response::getInstance()->beginSandbox();
+        }
+
+        if ($sandbox || !isset(self::$widgetPool[$key])) {
+            $requestObject = new WidgetRequest(Request::getInstance(), isset($request) ? new Config($request) : null);
+            $responseObject = new WidgetResponse(Request::getInstance(), Response::getInstance());
+
+            $widget = null;
+
+            try {
+                $widget = new $className($requestObject, $responseObject, $params);
+                $widget->execute();
+
+                if ($sandbox && is_callable($disableSandboxOrCallback)) {
+                    call_user_func($disableSandboxOrCallback, $widget);
+                }
+            } catch (Terminal $e) {
+                // Terminal ends a widget early on purpose, keep the instance
+            } catch (\Throwable $e) {
+                // sandbox calls have always swallowed errors and returned what was built
+                if (!$sandbox) {
+                    throw $e;
+                }
+            } finally {
+                if ($sandbox) {
+                    Response::getInstance()->endSandbox();
+                    Request::getInstance()->endSandbox();
+                }
+            }
+
+            if ($sandbox) {
+                return $widget;
+            }
+
+            self::$widgetPool[$key] = $widget;
+        }
+
+        return self::$widgetPool[$key];
+    }
+
+    /**
+     * alloc widget instance
+     *
+     * @param mixed $params
+     * @param mixed $request
+     * @param bool|callable $disableSandboxOrCallback
+     * @return $this
+     */
+    public static function alloc($params = null, $request = null, $disableSandboxOrCallback = true): Widget
     {
-        $parts = explode('@', $alias);
-        $className = $parts[0];
-        $alias = empty($parts[1]) ? $className : $parts[1];
+        return self::widget(static::class, $params, $request, $disableSandboxOrCallback);
+    }
 
-        if (isset(self::$_widgetAlias[$className])) {
-            $className = self::$_widgetAlias[$className];
-        }
-
-        if (!isset(self::$_widgetPool[$alias])) {
-            /** 如果类不存在 */
-            if (!class_exists($className)) {
-                throw new Typecho_Widget_Exception($className);
-            }
-
-            /** 初始化request */
-            if (!empty($request)) {
-                $requestObject = new Typecho_Request();
-                $requestObject->setParams($request);
-            } else {
-                $requestObject = Typecho_Request::getInstance();
-            }
-
-            /** 初始化response */
-            $responseObject = $enableResponse ? Typecho_Response::getInstance()
-                : Typecho_Widget_Helper_Empty::getInstance();
-
-            /** 初始化组件 */
-            $widget = new $className($requestObject, $responseObject, $params);
-
-            $widget->execute();
-            self::$_widgetPool[$alias] = $widget;
-        }
-
-        return self::$_widgetPool[$alias];
+    /**
+     * alloc widget instance with alias
+     *
+     * @param string|null $alias
+     * @param mixed $params
+     * @param mixed $request
+     * @param bool|callable $disableSandboxOrCallback
+     * @return $this
+     */
+    public static function allocWithAlias(
+        ?string $alias,
+        $params = null,
+        $request = null,
+        $disableSandboxOrCallback = true
+    ): Widget {
+        return self::widget(
+            static::class . (isset($alias) ? '@' . $alias : ''),
+            $params,
+            $request,
+            $disableSandboxOrCallback
+        );
     }
 
     /**
@@ -186,20 +233,24 @@ abstract class Typecho_Widget
     /**
      * 释放组件
      *
-     * @param string $alias 组件名称
+     * @param string|null $alias 组件名称
      */
-    public static function destroy(string $alias)
+    public static function destroy(?string $alias = null)
     {
-        if (isset(self::$_widgetPool[$alias])) {
-            unset(self::$_widgetPool[$alias]);
+        if (Common::nativeClassName(static::class) == 'Typecho_Widget') {
+            if (isset($alias)) {
+                unset(self::$widgetPool[$alias]);
+            } else {
+                self::$widgetPool = [];
+            }
+        } else {
+            $alias = static::class . (isset($alias) ? '@' . $alias : '');
+            unset(self::$widgetPool[$alias]);
         }
     }
 
     /**
      * execute function.
-     *
-     * @access public
-     * @return void
      */
     public function execute()
     {
@@ -210,14 +261,14 @@ abstract class Typecho_Widget
      *
      * @param boolean $condition 触发条件
      *
-     * @return $this|Typecho_Widget_Helper_Empty
+     * @return $this|EmptyClass
      */
     public function on(bool $condition)
     {
         if ($condition) {
             return $this;
         } else {
-            return new Typecho_Widget_Helper_Empty();
+            return new EmptyClass();
         }
     }
 
@@ -225,27 +276,73 @@ abstract class Typecho_Widget
      * 将类本身赋值
      *
      * @param mixed $variable 变量名
-     *
-     * @return self
+     * @return $this
      */
-    public function to(&$variable): Typecho_Widget
+    public function to(&$variable): Widget
     {
         return $variable = $this;
     }
 
     /**
+     * 按模版渲染
+     *
+     * @param string $template 模版
+     * @return string
+     */
+    public function template(string $template): string
+    {
+        return preg_replace_callback(
+            "/\{([_a-z0-9]+)\}/i",
+            function (array $matches) {
+                return $this->{$matches[1]};
+            },
+            $template
+        );
+    }
+
+    /**
      * 格式化解析堆栈内的所有数据
      *
-     * @param string $format 数据格式
-     *
-     * @return void
+     * @param string $template 模版
      */
-    public function parse(string $format)
+    public function parse(string $template)
     {
         while ($this->next()) {
-            echo preg_replace_callback("/\{([_a-z0-9]+)\}/i",
-                [$this, '__parseCallback'], $format);
+            echo $this->template($template);
         }
+    }
+
+    /**
+     * @param string|array $column
+     * @return array|mixed|null
+     */
+    public function toColumn($column)
+    {
+        if (is_array($column)) {
+            $item = [];
+            foreach ($column as $key) {
+                $item[$key] = $this->{$key};
+            }
+
+            return $item;
+        } else {
+            return $this->{$column};
+        }
+    }
+
+    /**
+     * @param string|array $column
+     * @return array
+     */
+    public function toArray($column): array
+    {
+        $result = [];
+
+        while ($this->next()) {
+            $result[] = $this->toColumn($column);
+        }
+
+        return $result;
     }
 
     /**
@@ -260,7 +357,7 @@ abstract class Typecho_Widget
         if ($key !== null && isset($this->stack[$key])) {
             $this->row = current($this->stack);
             next($this->stack);
-            $this->sequence ++;
+            $this->sequence++;
         } else {
             reset($this->stack);
             $this->sequence = 0;
@@ -274,29 +371,50 @@ abstract class Typecho_Widget
      * 将每一行的值压入堆栈
      *
      * @param array $value 每一行的值
-     *
      * @return mixed
      */
     public function push(array $value)
     {
         //将行数据按顺序置位
         $this->row = $value;
-        $this->length ++;
+        $this->length++;
 
         $this->stack[] = $value;
         return $value;
     }
 
     /**
+     * 将所有行的值压入堆栈
+     *
+     * @param array $values 所有行的值
+     */
+    public function pushAll(array $values)
+    {
+        foreach ($values as $value) {
+            $this->push($value);
+        }
+    }
+
+    /**
      * 根据余数输出
      *
      * @param mixed ...$args
-     * @return void
      */
     public function alt(...$args)
     {
+        $this->altBy($this->sequence, ...$args);
+    }
+
+    /**
+     * 根据余数输出
+     *
+     * @param int $current
+     * @param mixed ...$args
+     */
+    public function altBy(int $current, ...$args)
+    {
         $num = count($args);
-        $split = $this->sequence % $num;
+        $split = $current % $num;
         echo $args[(0 == $split ? $num : $split) - 1];
     }
 
@@ -313,17 +431,13 @@ abstract class Typecho_Widget
     /**
      * 魔术函数,用于挂接其它函数
      *
-     * @access public
-     *
      * @param string $name 函数名
      * @param array $args 函数参数
-     *
-     * @return void
      */
     public function __call(string $name, array $args)
     {
         $method = 'call' . ucfirst($name);
-        $this->pluginHandle()->trigger($plugged)->{$method}($this, $args);
+        self::pluginHandle()->trigger($plugged)->call($method, $this, $args);
 
         if (!$plugged) {
             echo $this->{$name};
@@ -333,40 +447,35 @@ abstract class Typecho_Widget
     /**
      * 获取对象插件句柄
      *
-     * @access public
-     *
-     * @param string|null $handle 句柄
-     *
-     * @return Typecho_Plugin
+     * @return Plugin
      */
-    public function pluginHandle(?string $handle = null): Typecho_Plugin
+    public static function pluginHandle(): Plugin
     {
-        return Typecho_Plugin::factory(empty($handle) ? get_class($this) : $handle);
+        return Plugin::factory(static::class);
     }
 
     /**
      * 魔术函数,用于获取内部变量
      *
-     * @access public
-     *
      * @param string $name 变量名
-     *
      * @return mixed
      */
     public function __get(string $name)
     {
-        if (array_key_exists($name, $this->row)) {
+        $method = '___' . $name;
+        $key = '#' . $name;
+
+        if (array_key_exists($key, $this->row)) {
+            return $this->row[$key];
+        } elseif (method_exists($this, $method)) {
+            $this->row[$key] = $this->$method();
+            return $this->row[$key];
+        } elseif (array_key_exists($name, $this->row)) {
             return $this->row[$name];
         } else {
-            $method = '___' . $name;
-
-            if (method_exists($this, $method)) {
-                return $this->$method();
-            } else {
-                $return = $this->pluginHandle()->trigger($plugged)->{$method}($this);
-                if ($plugged) {
-                    return $return;
-                }
+            $return = self::pluginHandle()->trigger($plugged)->call($method, $this);
+            if ($plugged) {
+                return $return;
             }
         }
 
@@ -378,26 +487,31 @@ abstract class Typecho_Widget
      *
      * @param string $name 值对应的键值
      * @param mixed $value 相应的值
-     *
-     * @return void
      */
     public function __set(string $name, $value)
     {
-        $this->row[$name] = $value;
+        $method = '___' . $name;
+        $key = '#' . $name;
+
+        if (isset($this->row[$key]) || method_exists($this, $method)) {
+            $this->row[$key] = $value;
+        } else {
+            $this->row[$name] = $value;
+        }
     }
 
     /**
      * 验证堆栈值是否存在
      *
-     * @access public
-     *
      * @param string $name
-     *
      * @return boolean
      */
     public function __isSet(string $name)
     {
-        return isset($this->row[$name]);
+        $method = '___' . $name;
+        $key = '#' . $name;
+
+        return isset($this->row[$key]) || method_exists($this, $method) || isset($this->row[$name]);
     }
 
     /**
@@ -421,15 +535,26 @@ abstract class Typecho_Widget
     }
 
     /**
-     * 解析回调
-     *
-     * @param array $matches
-     *
-     * @access protected
-     * @return string
+     * @return WidgetRequest
      */
-    protected function __parseCallback(array $matches): string
+    public function ___request(): WidgetRequest
     {
-        return $this->{$matches[1]};
+        return $this->request;
+    }
+
+    /**
+     * @return WidgetResponse
+     */
+    public function ___response(): WidgetResponse
+    {
+        return $this->response;
+    }
+
+    /**
+     * @return Config
+     */
+    public function ___parameter(): Config
+    {
+        return $this->parameter;
     }
 }
